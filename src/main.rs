@@ -1,4 +1,4 @@
-use raycasting::MAP;
+use raycasting::{raycast, FOV, MAP};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::Color;
@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 mod raycasting;
 
 const SPEED: f64 = 2.;
-const TURN_SPEED: f64 = 250.;
+const TURN_SPEED: f64 = 7.;
+const N_RAYS: i32 = 500;
 
 pub fn main() -> Result<(), String> {
     let sdl_context = sdl2::init()?;
@@ -17,8 +18,11 @@ pub fn main() -> Result<(), String> {
         .window("unnamed-game", 700, 700)
         .position_centered()
         .opengl()
+        .input_grabbed()
         .build()
         .map_err(|e| e.to_string())?;
+
+    sdl_context.mouse().set_relative_mouse_mode(true);
 
     let mut canvas = window.into_canvas().build().map_err(|e| e.to_string())?;
     let mut event_pump = sdl_context.event_pump()?;
@@ -32,7 +36,7 @@ pub fn main() -> Result<(), String> {
     let mut d_pressed = false;
     let mut now = Instant::now();
     let mut then = Instant::now();
-    let mut delta = now.duration_since(then);
+
     'running: loop {
         for event in event_pump.poll_iter() {
             match event {
@@ -41,49 +45,60 @@ pub fn main() -> Result<(), String> {
                     keycode: Some(Keycode::Escape),
                     ..
                 } => break 'running,
-                | Event::KeyDown { keycode: Some(code), .. } => {
-                    match code {
-                        Keycode::W => w_pressed = true,
-                        Keycode::A => a_pressed = true,
-                        Keycode::S => s_pressed = true,
-                        Keycode::D => d_pressed = true,
-                        _ => {}
-                    }
-                }
-                | Event::KeyUp { keycode: Some(code), .. } => {
-                    match code {
-                        Keycode::W => w_pressed = false,
-                        Keycode::A => a_pressed = false,
-                        Keycode::S => s_pressed = false,
-                        Keycode::D => d_pressed = false,
-                        _ => {}
-                    }
-                }
+                Event::KeyDown {
+                    keycode: Some(code),
+                    ..
+                } => match code {
+                    Keycode::W => w_pressed = true,
+                    Keycode::A => a_pressed = true,
+                    Keycode::S => s_pressed = true,
+                    Keycode::D => d_pressed = true,
+                    _ => {}
+                },
+                Event::KeyUp {
+                    keycode: Some(code),
+                    ..
+                } => match code {
+                    Keycode::W => w_pressed = false,
+                    Keycode::A => a_pressed = false,
+                    Keycode::S => s_pressed = false,
+                    Keycode::D => d_pressed = false,
+                    _ => {}
+                },
                 _ => {}
             }
         }
         then = now;
         now = Instant::now();
-        delta = now.duration_since(then);
-        let deltatime = delta.as_secs_f64();
+        let deltatime = now.duration_since(then).as_secs_f64();
         if w_pressed {
-            player_pos.1 += player_dir.to_radians().cos()*SPEED*deltatime;
-            player_pos.0 += player_dir.to_radians().sin()*SPEED*deltatime;
+            player_pos.1 += player_dir.to_radians().cos() * SPEED * deltatime;
+            player_pos.0 += player_dir.to_radians().sin() * SPEED * deltatime;
         }
         if s_pressed {
-            player_pos.1 -= player_dir.to_radians().cos()*SPEED*deltatime;
-            player_pos.0 -= player_dir.to_radians().sin()*SPEED*deltatime;
+            player_pos.1 -= player_dir.to_radians().cos() * SPEED * deltatime;
+            player_pos.0 -= player_dir.to_radians().sin() * SPEED * deltatime;
         }
         if a_pressed {
-            player_dir -= TURN_SPEED*deltatime;
+            player_pos.1 += (player_dir + 90.).to_radians().cos() * SPEED * deltatime;
+            player_pos.0 += (player_dir + 90.).to_radians().sin() * SPEED * deltatime;
         }
         if d_pressed {
-            player_dir += TURN_SPEED*deltatime;
+            player_pos.1 -= (player_dir + 90.).to_radians().cos() * SPEED * deltatime;
+            player_pos.0 -= (player_dir + 90.).to_radians().sin() * SPEED * deltatime;
         }
+        //set player_dir based off the relative mouse state
+        let mouse_state = event_pump.relative_mouse_state();
+        let mouse_x = mouse_state.x();
+        player_dir -= mouse_x as f64 * TURN_SPEED * deltatime;
+        if player_dir < 0. {
+            player_dir = 360. + player_dir;
+        }
+        player_dir = player_dir % 360.;
 
         let size = canvas.output_size()?;
         let step = (size.0 as f64 / 8.0).round() as usize;
-
+        
         // draw the map
         for (y, row) in MAP.iter().enumerate() {
             for (x, &cell) in row.iter().enumerate() {
@@ -116,26 +131,50 @@ pub fn main() -> Result<(), String> {
         // draw the player in red with half the size centered around the coordiantes
         canvas.set_draw_color(Color::RED);
         canvas.fill_rect(sdl2::rect::Rect::new(
-            ((player_pos.1 * step as f64) + (step as f64)/4.) as i32,
-            ((player_pos.0 * step as f64) + (step as f64)/4.) as i32,
-            (step/2) as u32,
-            (step/2) as u32,
+            ((player_pos.0 * step as f64) + (step as f64) / 4.) as i32,
+            ((player_pos.1 * step as f64) + (step as f64) / 4.) as i32,
+            (step / 2) as u32,
+            (step / 2) as u32,
         ))?;
 
         canvas.set_draw_color(Color::BLUE);
+
         // draw the player rotation line
         canvas.draw_line(
             (
-                ((player_pos.1 * step as f64) + (step as f64)/2.) as i32,
-                ((player_pos.0 * step as f64) + (step as f64)/2.) as i32,
+                ((player_pos.0 * step as f64) + (step as f64) / 2.) as i32,
+                ((player_pos.1 * step as f64) + (step as f64) / 2.) as i32,
             ),
             (
-                ((player_pos.1 * step as f64) + (step as f64)/2. + player_dir.to_radians().cos()*step as f64) as i32,
-                ((player_pos.0 * step as f64) + (step as f64)/2. + player_dir.to_radians().sin()*step as f64) as i32,
+                ((player_pos.0 * step as f64)
+                    + (step as f64) / 2.
+                    + player_dir.to_radians().sin() * step as f64) as i32,
+                ((player_pos.1 * step as f64)
+                    + (step as f64) / 2.
+                    + player_dir.to_radians().cos() * step as f64) as i32,
             ),
         )?;
 
-
+        // draw the rays
+        for i in 0..N_RAYS {
+            let angle = player_dir.to_radians() - FOV.to_radians() / 2. + i as f64 * FOV.to_radians() / N_RAYS as f64;
+            let dist = raycast(player_pos, angle, MAP);
+            canvas.draw_line(
+                (
+                    ((player_pos.0 * step as f64) + (step as f64) / 2.) as i32,
+                    ((player_pos.1 * step as f64) + (step as f64) / 2.) as i32,
+                ),
+                (
+                    ((player_pos.0 * step as f64)
+                        + (step as f64) / 2.
+                        + angle.sin() * dist * step as f64) as i32,
+                    ((player_pos.1 * step as f64)
+                        + (step as f64) / 2.
+                        + angle.cos() * dist * step as f64) as i32,
+                ),
+            )?;
+        }
+        
         canvas.present();
         canvas.set_draw_color(Color::BLACK);
         canvas.clear();
